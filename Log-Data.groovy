@@ -4,6 +4,15 @@
      * Tool Tip code thanks to SBurke,  https://community.hubitat.com/t/tooltips-for-app-input-switches/137414
      *
      *        Roughly 20KB per day for decently-frequent (~8 min avg) updates.
+     *
+     * To do: Verify purging. Add links to github docs in tool tips.
+     * Purging after more times. Archive completed months to custom file.
+     * i.e. at end of august, create 2024-08-<fname>.json of that month only.
+
+     * DateString in local time rather than UTC - location.timeZone returns local TimeZone object.  timeOfDayIsBetween() takes this as an optional end parameter
+     * Convert date usages to https://docs.oracle.com/javase/1.5.0/docs/api/java/util/Calendar.html#Calendar(java.util.TimeZone,%20java.util.Locale) Calendar where able.
+     * Converts back to Date with Calendar.getTime(), but that may need timezone fixing still.
+     *
     */
 
     import groovy.transform.Field
@@ -16,7 +25,7 @@
     // import groovy.json.JsonSlurper  // https://docs.groovy-lang.org/latest/html/gapi/groovy/json/JsonSlurper.html
     import groovy.json.JsonOutput   // https://docs.groovy-lang.org/latest/html/gapi/groovy/json/JsonOutput.html
 
-    public static String version()      {  return "1.0.0"  }
+    public static String version()      {  return "1.0.1"  }
     def getThisCopyright(){"&copy; 2024 robomac Tony McNamara"}
 
     @Field final String NameAttrDelim = '%'
@@ -55,10 +64,13 @@ def mainPage() {
             paragraph "${tooltipStyle}"
             input "thisChartName", "text", title: "Event Grabber Instance Name", submitOnChange: true
             if(thisChartName) app.updateLabel("$thisChartName")
+            section("General Retention") {}
+            input (name:"daysKeepData", title:"Time to keep data${getZindexToggle('daysKeepData')} ${getTooltipHTML('Data Retention', 'Data is stored in File Manager in JSON files. Over time it will get very long. At least for now, the entire file is loaded and parsed both to add events and to chart it, so smaller is better. Set at least one month if archiving.')}", type:"enum", options: [0: "Forever - don't purge", 7:"One Week", 14:"Two Weeks", 21:"Three Weeks", 31:"A Month",45:"45 Days",93:"Three Months"], required:true, submitOnChange:true, width:3)
+            input (name:"archiveMonthly", title:"Save monthly archive at end of month?${getZindexToggle('archiveMonthly')} ${getTooltipHTML('Data Archiving', 'As long as the data retention is one month or longer, write a monthly JSON file at the end of the month?')}", type: "bool", defaultValue: false, submitOnChange: true, width: 2)
+            paragraph "<div style='background:#FFFFFF; height: 1px; margin-top:0em; margin-bottom:0em ; border: 0;'></div>"    //Horizontal Line
+            section("Devices") {}
+            input (name:"chartAttribute", title:"<b>Attribute to Log</b>${getZindexToggle('chartAttribute')} ${getTooltipHTML('Attribute Selection', 'Charting and Logging is grouped by Attributes. The same device may be selected more than once, once per attribute.')}", type:"enum", options: [1:"Temperature", 2:"Battery Level", 3:"Humidity", 4:"Luminance", 5:"Motion"], required:true, submitOnChange:true, width:3)
 
-            input (name:"chartAttribute", title:"<b>Attribute to Chart</b>${getZindexToggle('chartAttribute')} ${getTooltipHTML('Attribute Selection', 'Charting and Logging is grouped by Attributes. The same device may be selected more than once, once per attribute.')}", type:"enum", options: [1:"Temperature", 2:"Battery Level", 3:"Humidity", 4:"Luminance"], required:true, submitOnChange:true, width:3)
-
-            input (name:"daysKeepData", title:"Time to keep data${getZindexToggle('daysKeepData')} ${getTooltipHTML('Data Retention', 'Data is stored in File Manager in JSON files. Over time it will get very long. At least for now, the entire file is loaded and parsed both to add events and to chart it, so smaller is better.')}", type:"enum", options: [0: "Forever - don't purge", 7:"One Week", 14:"Two Weeks", 21:"Three Weeks", 31:"A Month"], required:true, submitOnChange:true, width:3)
 
             switch (chartAttribute?chartAttribute.toInteger():0) {
                 case 1: 
@@ -72,6 +84,13 @@ def mainPage() {
                     break;
                 case 4: 
                     input "selectedLightDevices", "capability.illuminanceMeasurement", title: "Light Devices to be Monitored" , multiple: true, required: false, defaultValue: null, width: 6
+                    break;
+                // Activity - Contact vs Motion vs Presence: Presence is like a phone, geo-locates a target. Contact and Motion are sensors. So I'm only using them for room activity.
+                // Fun Fact: Ecobee thermostat REMOTE SENSORS work for motion, but the MAIN THERMOSTAT does not seem to with the current drivers.
+                // Ecobee default to 30 minute timeout. Follow Me mode vs Smart Home / Smart
+                case 5: // Activity via Motion - motion has active and inactive.
+
+                    input "selectedMotionDevices", "capability.motionSensor", title: "Motion Sensors to be Monitored" , multiple: true, required: false, defaultValue: null, width: 6
                     break;
             }
             // Empty the devices map. It will be of the form: DisplayName - Attribute (because that's what comes in with an Event): { DataMin, DataMax}
@@ -88,6 +107,9 @@ def mainPage() {
             for (dev in selectedLightDevices) {
                 state.selectedDevices << [(deviceNameAndAttributeToVar(dev.getDisplayName(), "illuminance")):["dataMin":UNINITIALIZED, "dataMax":UNINITIALIZED,"attribute":"illuminance"]]
             }
+            for (dev in selectedMotionDevices) {
+                state.selectedDevices << [(deviceNameAndAttributeToVar(dev.getDisplayName(), "motion")):["dataMin":UNINITIALIZED, "dataMax":UNINITIALIZED,"attribute":"motion"]]
+            }
             if (logInfo) log.info ("${thisChartName} Selected Devices: ${state.selectedDevices}")
         }       
         section(hideable:true, hidden:true, "Debugging/Advanced") { 
@@ -95,6 +117,8 @@ def mainPage() {
             paragraph "Subscribing and Unsubscribing (Pausing) Events${getZindexToggle('enableEvents')} ${getTooltipHTML('Subscribing to Events','This is done automatically on installation. The only reason to do this would be if you Disabled them to pause activity.')}<br/>"
             input (name: "enableEvents", type: "button", title: "Enable Events (Subscribe)", backgroundColor: "#27ae61", textColor: "white", submitOnChange: true, width: 2)
             input (name: "unsubscribeEvents", type: "button", title: "Disable Events (Unsubscribe)", backgroundColor: "#27ae61", textColor: "white", submitOnChange: true, width: 3)
+            input (name: "archiveNow", type: "button", title: "Run Archive Now", backgroundColor: "#27ae61", textColor: "white", submitOnChange: true, width: 2)
+            paragraph "<div style='background:#FFFFFF; height: 1px; margin-top:0em; margin-bottom:0em ; border: 0;'></div>"    //Horizontal Line
             input (name: "logInfo",  type: "bool", title: "<b>Enable info logging?</b>", defaultValue: false, submitOnChange: true, width: 2)
             input (name: "logTrace", type: "bool", title: "<b>Enable trace logging?</b>", defaultValue: false, submitOnChange: true, width: 2)
             input (name: "logDebug", type: "bool", title: "<b>Enable debug logging?</b>", defaultValue: false, submitOnChange: true, width: 2)
@@ -148,10 +172,19 @@ def mainPage() {
 
     // Called when app first installed
     def installed() {
-    // for now, just write entry to "Logs" when it happens:
-        log.trace "${thisChartName} installed(). Subscribing to events."
         subscribeToEvents()
         updateJSONStats()
+        // Schedule Archive and Purge calls. Purges can be more frequent than arhcives.
+        unschedule(archiveLastMonth)
+        if (archiveMonthly) { // 00:05 on the first of each month
+            //  "Seconds" "Minutes" "Hours" "Day Of Month" "Month" "Day Of Week" "Year"
+            schedule("0 5 0 1 * ? *", archiveLastMonth)
+        }
+        unschedule(purgePastData)
+        int daysKeep = daysKeepData.toInteger()
+        if (daysKeep > 0) {
+            schedule("0 7 0 * * ? *", purgePastData)
+        }
     }
 
     // Called when user presses "Done" button in app
@@ -229,9 +262,25 @@ def mainPage() {
         }
         def devEvent = [:]
         devEvent["time"] = evt.getUnixTime()
-        devEvent["val"] = toFloat(evt.value)
-        devEvent["dateStr"] = evt.getDate()
-        deviceHistory.add(devEvent)
+        if (attributeName == "motion") { // Need to special case. This toggles between active and inactive. Val is float.
+            log.info("Got motion event on ${device} of ${evt.value} for attribute ${attributeName}")
+            if  (evt.value == "active") {   // Save as a flag
+                devEvent["val"] = toFloat(UNINITIALIZED, device)
+                devEvent["dateStr"] = evt.getDate()
+                deviceHistory.add(devEvent)
+            } else { // Look up flag, turn into increment of time between active and inactive.
+                def lastElement = deviceHistory.size() - 1
+                if (deviceHistory[lastElement]["val"] == UNINITIALIZED) {
+                    deviceHistory[lastElement]["val"] = (devEvent["time"] - deviceHistory[lastElement]["time"]) / 1000  // Convert to seconds
+                } else {    // We have an error of some sort!!!
+                    log.error("Error with device ${device} - couldn't find precursor.")
+                }
+            }
+        } else {
+            devEvent["val"] = toFloat(evt.value, device)
+            devEvent["dateStr"] = evt.getDate()
+            deviceHistory.add(devEvent)
+        }
         writeToFile(fname, deviceHistory)
         if (logDebug) log.debug("${thisChartName}: Added event to file ${fname}")
     }
@@ -273,6 +322,11 @@ def mainPage() {
             subscribe(dev, "illuminance", handler)
             retrievePastEvents(dev, "illuminance")
         }
+        for (dev in selectedMotionDevices) {
+            if (logDebug) log.debug("${thisChartName}: Subscribing to ${dev.getDisplayName()}-motion.")
+            subscribe(dev, "motion", handler)
+            retrievePastEvents(dev, "motion")
+        }
     }
 
     // Goes through the list of devices and creates JSON of their past events.
@@ -295,7 +349,7 @@ def mainPage() {
             if (evt.name == attributeName) {
                 def devEvent = [:]
                 devEvent["time"] = evt.getUnixTime()
-                devEvent["val"] = toFloat(evt.value)
+                devEvent["val"] = toFloat(evt.value, device)
                 devEvent["dateStr"] = evt.getDate()
                 devEventList.add(devEvent)
             }
@@ -310,7 +364,6 @@ def mainPage() {
         }
     }
 
-
     // Per https://docs2.hubitat.com/en/developer/app/preferences, default button handler
     def appButtonHandler(buttonName) {    
         switch(buttonName) {
@@ -320,6 +373,15 @@ def mainPage() {
             case "unsubscribeEvents":
                 unsubscribe()
                 break
+            case "archiveNow":  // Run archive for the past six months.
+                log.debug("Starting Archive")
+                for (month = -6; month < 1; month++) {
+                    def startDate = Calendar.getInstance()
+                    startDate.add(Calendar.MONTH, month)
+                    log.debug("For month value ${month}, got ${startDate} of Year ${startDate.get(Calendar.YEAR)} and Month ${startDate.get(Calendar.MONTH)}")
+                    archiveMonthEvents(startDate.get(Calendar.YEAR), startDate.get(Calendar.MONTH))
+                }
+                break;
         }
     }
 
@@ -355,40 +417,135 @@ def mainPage() {
         return createdName
     }
 
-    // Loop through each device in the list, for the specified attribute, and purge the file. 
-    // If the same device is being logged with different attributes, those are distinct calls.
-    def purgePastDeviceAttribute(def devices, def attribute, Date cutoff) {
-        for (dev in devices) {
-            if (logDebug) log.debug("${thisChartName}: Purging ${dev} ${attribute} to ${cutoff}.")
-            def retainedEvents = []
-            def fname = parent.createDataFilename(dev, deviceCategory)
-            def jsonMapList = readDeviceHistoryFromFile(fname)
-            for (mapItem in jsonMapList) {
-                eventDate = new Date(mapItem["time"])
-                if (eventDate.after(cutoff)) { // write to output 
-                    retainedEvents << mapItem
-                }
-            }
-            writeToFile(fname, retainedEvents)
-       }
-    }
 
     /** This could be made more efficient by treating it as text file regions, but the time taken doesn't seem worth saving. */
     def purgePastData(){
-        if (daysKeepData > 0) {
-            Date startTime = DateUtils.addDays(now, -1*daysKeepData)
-            purgePastDeviceAttribute()
-            // read and copy
-            purgePastDeviceAttribute(selectedTempDevices, "temperature", cutoff)
-            purgePastDeviceAttribute(selectedBattDevices, "battery", cutoff)
-            purgePastDeviceAttribute(selectedHumidDevices, "humidity", cutoff)
-            purgePastDeviceAttribute(selectedLightDevices, "illuminance", cutoff)
+        int dataDays = daysKeepData.toInteger()
+        if (dataDays > 0) {
+            Calendar startCal = Calendar.getInstance(); // Should receive current timezone
+            if ((dataDays > 28) && (dataDays != 45)) { // It's in roughly months; calc it.
+                int monthsKeepData = (int) (dataDays/30)
+                startCal.add(Calendar.MONTH, monthsKeepData * -1)
+            } else {
+                startCal.add(Calendar.DATE, dataDays * -1)
+            }
+            Date cutoff = startCal.getTime()
+            def deviceList = createDeviceAttrList()
+            for (int x = 0; x < deviceList.size(); x+= 2) {
+                def dev = deviceList[x]
+                def attr = deviceList[x+1]
+                if (logDebug) log.debug("${thisChartName}: Purging ${dev.getDisplayName()} ${attr} to ${cutoff}.")
+                // TMcN To Do remove test limit
+                if (dev.getDisplayName().contains("Sensorama")) {
+                    def retainedEvents = []
+                    def fname = createDataFilename(dev.getDisplayName(), attr)
+                    def jsonMapList = readDeviceHistoryFromFile(fname)
+                    for (mapItem in jsonMapList) {
+                        eventDate = new Date(mapItem["time"])
+                        if (eventDate.after(cutoff)) { // write to output 
+                            retainedEvents << mapItem
+                        }
+                    }
+                    writeToFile(fname, retainedEvents)
+                }
+            }
         }
+
     }
+
+    /** Hubitat doesn't allow creating classes nor Tuples, so this creates a list of the form:
+     *  device1, attribute1, device2, attribute2, ....
+     *  Iterate through as:
+     *   for (int x = 0; x < deviceList.size(); x+= 2) {
+     *     def dev = deviceList[x]
+     *     def attr = deviceList[x+1]
+     *     ...
+     */ 
+    def createDeviceAttrList() {
+        def deviceList = []
+        for (dev in selectedTempDevices) {
+            deviceList += [dev, "temperature"]
+        }
+        for (dev in selectedBattDevices) {
+            deviceList += [dev, "battery"]
+        }
+        for (dev in selectedHumidDevices) {
+            deviceList += [dev, "humidity"]
+        }
+        for (dev in selectedLightDevices) {
+            deviceList += [dev,  "illuminance"]
+        }
+        for (dev in selectedMotionDevices) {
+            deviceList += [dev, "motion"]
+        }
+        return deviceList
+    }
+
+    // Designed to be called by scheduler, on 1st day of a new month
+    def archiveLastMonth() {
+        def calDate = Calendar.getInstance()
+        calDate.add(Calendar.MONTH, -1)
+        archiveMonthEvents(calDate.get(Calendar.YEAR), calDate.get(Calendar.MONTH))
+    }
+
+    /** Write all logged events  from the specified year/month to an archive file. */
+    def archiveMonthEvents(def year, def month){
+        // Date is millis UTC from epoch. We want month boundaries current TZ
+        Calendar endCal = Calendar.getInstance(); // Should receive current timezone
+        endCal.set(year, month, 1, 0, 0, 0) // Month is zero-indexed, so if Aug == 08 is passed in, here it means "end Sept 01 midnight."
+        Date endTime = endCal.getTime()
+        endCal.add(Calendar.MONTH, -1)
+        Date startTime = endCal.getTime()
+        def deviceList = createDeviceAttrList()
+
+        for (int x = 0; x < deviceList.size(); x+= 2) {
+            def dev = deviceList[x]
+            def attr = deviceList[x+1]
+            def retainedEvents = []
+            def fname = createDataFilename(dev.getDisplayName(), attr)
+            def destFilename = "${year}-${String.format("%02d", month)}-${fname}"
+            if (filenameHasData(destFilename)) {
+                if (logDebug) log.debug("${thisChartName}: Archive ${destFilename} already exists. Skipping.")    
+                continue
+            }
+            if (logDebug) log.debug("${thisChartName}: Archiving ${dev} ${startTime} to ${endTime}  for ${year}-${month} to ${destFilename}.")
+
+            def jsonMapList = readDeviceHistoryFromFile(fname)
+            for (mapItem in jsonMapList) {
+                eventDate = new Date(mapItem["time"])
+                if (timeOfDayIsBetween(startTime, endTime, eventDate)) {
+                    retainedEvents << mapItem
+                }
+            }
+            if (retainedEvents.size() > 4) {
+                writeToFile(destFilename, retainedEvents)
+            } else {
+                log.debug("Archive Monthly: No events for ${destFilename}")
+            }
+       }
+    }
+
 
     /** Pushes object to hub as fname. */
     def writeToFile(String fname, def obj){
         uploadHubFile(fname, groovy.json.JsonOutput.toJson(obj).getBytes())
+    }
+
+    /** Checks if the file exists and has data. Kind-of stupid, but... the closest hub equivalent is to list and parse all filenames or to read the file.
+     *  So hacking for now.
+     */
+    def filenameHasData(String fname) {
+        byte[] fdata 
+        try {
+            fdata = downloadHubFile(fname)
+        } catch (Exception ex) {
+            return false
+        }
+
+        if ((fdata == null) || (fdata.size() < 2)) {
+            return false
+        }
+        return true
     }
 
     /** Returns a list of maps. Currently the map elements are: val (float), dateStr (string) and time (long). 
@@ -429,12 +586,12 @@ def mainPage() {
     }
 
 
-    float toFloat(def val) {
+    float toFloat(def val, def device) {
         try {
             if(val instanceof String){return Float.parseFloat(val) }
             return (float)val
             } catch(Exception ex) {
-                log.error("${thisChartName}: Error parsing Event Value ${val} into float. ${ex}")
+                log.error("${thisChartName}: Error parsing Event Value ${val} into float. ${ex} for ${device}")
             }
         return (float)UNINITIALIZED    
     }

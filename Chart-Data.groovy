@@ -85,7 +85,7 @@
                 input (name: "includeMinMax", type:"bool", title: "<b>Include min/max values in legend?</b>${getZindexToggle('includeMinMax')} ${getTooltipHTML('Min/Max on the Chart','If On, the low and high values for each device will be listed after their name on the legend on the chart.')}", defaultValue: true)
                 input (name: "chartWidth", type: "number", title:"<b>Width of chart</b>", defaultValue: 200)
                 input (name: "chartHeight", type: "number", title:"<b>Height of chart, excluding legend/labels</b>", defaultValue: 200)
-                input (name: "labelHeight", type: "number", title:"<b>Space for legend/labels. (~15 per device or 60 for a timestamp axis label.)", defaultValue: 60)
+                input (name: "labelHeight", type: "number", title:"<b>Space for legend/labels. (~15 per device or 65 for a timestamp axis label.)", defaultValue: 65)
             }
             section(hideable:true, hidden:false, "${thisChartName} Color Settings") {
                 paragraph "<h2>Configuring Chart Colors</h><p>The current color map is always displayed in hex. An equivalent list can be pasted into the \"Load Colors\" input, including color names, and then \"Load Colors\" pressed; if names are found, they will be converted to hex.<br/>Colors may also be selected via the drop-down and then chosen with the picker or input box; to save those, click \"Save\" and the color map will change to reflect it.</p>"
@@ -217,17 +217,6 @@
 
     }
 
-    def logEvent(evt) {
-        // Omitting source (usually DEVICE) and evt.description (seems to always be null)
-        log.info("${thisChartName}:\n\tDesc: ${evt.descriptionText}\n\tAttribute ${evt.name}\n\tAttribute Value ${evt.value}\n\tUnit: ${evt.unit}\n\tDisplay Name: ${evt.getDisplayName()}\n\tDate: ${evt.getDate()}")
-    }
-
-    // Handle Event - When a published event - e.g. temp change - comes in.
-    def handler(evt) {
-        if (logDebug) logEvent(evt)
-        saveEvent(evt)
-    }
-
     def appButtonHandler(buttonName) {    
         switch(buttonName) {
             case "rebuildChart":
@@ -271,43 +260,11 @@
     // ******* File Management https://docs2.hubitat.com/en/developer/interfaces/file-manager-api ****
     //***** Access at http://<ip>/local/<fname>
 
-    def readDeviceHistoryFromFile(String fname) { // Should be a list
-        byte[] fdata 
-        try {
-            fdata = downloadHubFile(fname)
-        } catch (Exception ex) {
-            log.error("${thisChartName}: File ${fname} not found. Not loaded. ${ex}")
-            return []
-        }
-
-        if (fdata == null) {
-            log.error("${thisChartName}: File ${fname} was empty.")
-            return []
-        }
-        def retObj = parseJson(new String(fdata))
-        if (retObj == null) {
-            log.error("${thisChartName}: File ${fname} could not be parsed.")
-            return []
-        }
-        return retObj
-    }
-
     // ****************  SVG BUILD ******************
-    // Chart all files from timestamps specified, for width specified.
-    float toFloat(def val) {
-        try {
-            if(val instanceof String){return Float.parseFloat(val) }
-            return (float)val
-            } catch(Exception ex) {
-                log.error("${thisChartName}: Error parsing Event Value ${val} into float. ${ex}")
-            }
-        return (float)UNINITIALIZED    
-    }
-
     // Returns a tuple of min, max. (Technically a list)
     def calcJSONStat(def fname, Date startTime){
         Date endTime = new Date()
-        def jsonMapList = readDeviceHistoryFromFile(fname)
+        def jsonMapList = parent.readDeviceHistoryFromFile(fname)
         for (mapItem in jsonMapList) {
             eventDate = new Date(mapItem["time"])
             if (timeOfDayIsBetween(startTime, endTime, eventDate)) {
@@ -327,7 +284,7 @@
 
     def buildWriteSVGFile() {
         String svgFileName = "${thisChartName}.svg"
-        String svgData = buildSVG((int)chartWidth, (int)chartHeight, (int)labelHeight, new Date(), chartHours)
+        String svgData = buildChartSVG((int)chartWidth, (int)chartHeight, (int)labelHeight, new Date(), chartHours)
         if (logDebug) log.debug"${thisChartName}: Uploading file per rebuild request: ${svgFileName} as ${parent.cleanseFileName(svgFileName)}"
         uploadHubFile(parent.cleanseFileName(svgFileName), svgData.getBytes())
     }
@@ -354,7 +311,7 @@
     // https://developer.mozilla.org/en-US/docs/Web/SVG
     // Attribute: deviceCategory
     // Devices: deviceList
-    String buildSVG(Integer width, Integer height, Integer heightOfLabelArea, Date endTime, long lhours) {
+    String buildChartSVG(Integer width, Integer height, Integer heightOfLabelArea, Date endTime, long lhours) {
         def functionStartTime = now()
         Integer fontSize = 12
         Integer hours = (int)lhours
@@ -397,7 +354,7 @@
             def fname = parent.createDataFilename(dev, deviceCategory)
             StringBuilder line = new StringBuilder()
             line.append("<polyline points=\"")
-            def jsonMapList = readDeviceHistoryFromFile(fname)
+            def jsonMapList = parent.readDeviceHistoryFromFile(fname)
             boolean minMaxInited = false
             def minV, maxV
             for (mapItem in jsonMapList) {
@@ -441,8 +398,19 @@
         svgFile.append("</svg>\n")
         def functionRunTime = now() - functionStartTime
 
-        if (logDebug) log.debug("${thisChartName}: buildSvg() took ${functionRunTime}ms. ")
+        if (logDebug) log.debug("${thisChartName}: buildChartSvg() took ${functionRunTime}ms. ")
         return svgFile.toString()
+    }
+
+
+
+    // Builds a horizontal stack starting from endTime - hours. new Date()
+    // https://developer.mozilla.org/en-US/docs/Web/SVG
+    // Attribute: deviceCategory
+    // Devices: deviceList
+    // This puts vertical time labels at lhours / timeLabelCount intervals. (Not really - it rounds the hours and adds one count.)
+    String buildEventTimeSVG(Integer width, Integer height, Integer heightOfLabelArea, Date endTime, long lhours, Integer minutesPerSegment, Integer timeLabelCount) {
+        //  <rect width="200" height="100" x="10" y="10" rx="20" ry="20" fill="blue" /> rx/y are corner radius.
     }
 
     @Field static colorNames = [
